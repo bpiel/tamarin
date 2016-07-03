@@ -3,12 +3,11 @@
 (def t1 {:a {:b [1 2 3] :c "hello"} :d :what?})
 (def t2 {:a [1] :b :hi})
 
-(def *indent-width* 2)
-(def *target-width* 120)
-(def *max-height* 20)
-(def *max-seq-items* 10)
-
-(declare annotate-all)
+(def ^:dynamic *indent-width* 2)
+(def ^:dynamic *target-width* 120)
+(def ^:dynamic *max-x* 20)
+(def ^:dynamic *max-y* 20)
+(def ^:dynamic *max-seq-items* 100)
 
 (defn simple-type
   [v]
@@ -23,101 +22,148 @@
     float? :float    
     identity (type v)))
 
-(def annotate nil) ;; HACK to force redefinition
-(defmulti annotate (fn [v _] (simple-type v)))
+(declare do-it)
+(declare pass2)
 
-(defn do-coll-single-line [] nil)
 
-(defn interleave-linebreaks
-  [coll]
-  (interleave coll (repeat {:height 1 :length 1 :width 0 :string "\n"})))
+(defn mk-coll-token-map
+  [children depth length multi-line?]
+  {:coll true
+   :multi-line? multi-line?
+   :length length
+   :children children
+   :depth depth})
 
-(defn do-coll-multi-line
-  [coll depth start-line]
-  (loop [[head & tail] coll ;; take *max*
-         total-height 0
-         agg []]
-    (if (nil? head)
-      [(interleave-linebreaks agg) false]
-      (let [item (annotate head depth)
-            item-truncd? (:truncated item)
-            height (:height item)
-            new-height (+ height total-height)]
-        (if (or item-truncd?
-                (> new-height
-                   *max-height*))
-          [(interleave-linebreaks agg) true]
-          (recur tail
-                 new-height
-                 (conj agg item)))))))
+(defn calc-single-line-length
+  ([] 2)
+  ([init add]
+   (+ init 1 (:length add))))
+
+(defn calc-multi-line-length
+  ([] 2)
+  ([init add]
+   (max init
+        (+ 2 (:length add)))))
+
+(defn collapse-depth
+  [options]
+  (let [total-single (apply + (map first options))]
+    (loop [[[sl ml] & tail] options
+           total total-single
+           depth 0]
+      (if (or (nil? sl)
+              (< total *max-x*))
+        depth
+        (recur tail
+               (+ (- total sl) ml)
+               (inc depth))))))
+
+(defn mk-options
+  [options sl-len ml-len]
+  (conj options [sl-len ml-len]))
 
 (defn do-coll
-  [coll depth start-line]
-  (let [[chips tail too-long?] (do-coll-single-line (take *max-seq-items*
-                                                          (map #(annotate % depth #_ "laziness is key!")
-                                                               coll))
-                                                    depth
-                                                    start-line)]
-    (if too-long?
-      (do-coll-multi-line (concat chips
-                                  (map #(annotate % depth #_ "laziness is key!"))))
-      [chips false])))
+  [coll depth options]
+  (loop [[head & tail] coll
+         kids []
+         c-depth nil
+         sl-len (calc-single-line-length)
+         ml-len (calc-multi-line-length)]
+    (if (nil? head)
+      [(or c-depth (collapse-depth options))
+       (if (< depth c-depth)
+         (mk-coll-token-map kids depth ml-len true)
+         (mk-coll-token-map kids depth sl-len false))]
+      (let [[c-depth' new-kid] (do-it head
+                                      (inc depth)
+                                      (mk-options options sl-len ml-len))]
+        (recur tail
+               (conj kids new-kid)
+               (max (or c-depth 0) c-depth')
+               (calc-single-line-length sl-len new-kid)
+               (calc-multi-line-length ml-len new-kid))))))
+
+(defn do-scalar
+  [v options]
+  (let [s (pr-str v)]
+    [(collapse-depth options)
+     {:coll false
+      :multi-line? false
+      :length (count s)
+      :string s}]))
+
+(defn do-it
+  [v depth options]
+  (if (coll? v)
+    (do-coll v depth options)
+    (do-scalar v options)))
 
 
-(defmethod annotate :map
-  [v depth]
-  (concat [{:type (simple-type v) :place :open}]
-          (mapcat #(annotate % (inc depth))
-                  v)
-          [{:type (simple-type v) :place :close}]))
+(defn interleave-delim
+  [coll delim]
+  (drop-last (interleave coll (repeat delim))))
 
-(defmethod annotate :default
-  [v depth]
-  (let [s (pr-str v)
-        c (count s)]
-    [{:type (simple-type v)
-      :string s
-      :height 0
-      :width c
-      :length c
-      :multi-line false}]))
+(defn single-line
+  [coll]
+  (let [kids (->> coll
+                  :children
+                  (map pass2))]
+    (flatten
+     (concat
+      [{:p :open :string "[" :length 1}]
+      (interleave-delim  kids {:string " " :length 1})
+      [{:p :close :string "]" :length 1}]))))
 
-(defn annotate-all
-  [depth coll]
-  (let [kids (mapcat #(annotate % (inc depth))
-                     coll)]
-    {:kids kids
-     :multi-line? (some :multi-line kids)
-     :max-width (->> coll
-                     (map :width)
-                     (apply max))
-     :sum-height (->> coll
-                      (map :height)
-                      (apply +))
-     :sum-length (->> coll
-                      (map :length)
-                      (apply +))}))
+(defn multi-line
+  [coll]
+  (let [kids (->> coll
+                  :children
+                  (map pass2))]
+    (flatten
+     (concat
+      [{:p :open :string "[" :length 1}]
+      (interleave-delim kids {:string "\n" :height 1 :length 0 :line-break true})
+      [{:p :close :string "]" :length 1}]))))
 
-
-(defn ->annotated
+(defn pass2
   [v]
-  (annotate v 0))
+  (if (:coll v)
+    (if (:multi-line? v)
+      (multi-line v)
+      (single-line v))
+    v))
+
+(defn spaces [n] (apply str (repeat n " ")))
+
+(defn pass3
+  "Add indentation"
+  [coll init-indent]
+  (loop [[{:keys [p length line-break] :as head} & tail] coll
+         indent init-indent
+         agg []]
+    (if (nil? head)
+      agg
+      (let [indent' (cond (= p :open) (+ indent length)
+                          (= p :close) (- indent length)
+                          :else indent)
+            agg' (if line-break
+                   (conj agg head {:string (spaces indent') :length indent'})
+                   (conj agg head))]
+        (recur tail
+               indent'
+               agg')))))
+
+(defn pass4
+  [coll]
+  (apply str (map :string coll)))
 
 
-(clojure.pprint/pprint (->annotated t2))
+(def vvv [1  [1 2 3 ["hello"] 6 7 8] 6 ])
 
-(->annotated t2)
+(println (pass4 (pass3 (pass2 (second (do-it vvv 0 [])))
+                       0)))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+#_ (println (pass4 (pass3 (pass2 {:coll true :multi-line? true :children [{:string "1" :length 1}
+                                                                       {:string "2" :length 1}
+                                                                       {:string "3" :length 1}]})
+                       0)))
