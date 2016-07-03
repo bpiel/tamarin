@@ -7,16 +7,18 @@
 (def ^:dynamic *target-width* 120)
 (def ^:dynamic *max-x* 20)
 (def ^:dynamic *max-y* 20)
-(def ^:dynamic *max-seq-items* 100)
+(def ^:dynamic *max-seq-items* 20)
 
 (defn simple-type
   [v]
   (condp #(% %2) v
     nil? nil
     map? :map
+    #(= (type %) clojure.lang.MapEntry) :map-entry
     vector? :vector
     list? :list
     seq? :seq
+    set? :set
     string? :string
     integer? :int
     float? :float    
@@ -25,25 +27,34 @@
 (declare do-it)
 (declare pass2)
 
+(def type-bound-map
+  {:map ["{" "}"]
+   :list ["(" ")"]
+   :seq ["(" ")"]
+   :vector ["[" "]"]
+   :map-entry ["" ""]
+   :set ["#{" "}"] })
 
 (defn mk-coll-token-map
-  [children depth length multi-line?]
+  [type children depth length multi-line?]
   {:coll true
+   :type type 
    :multi-line? multi-line?
    :length length
    :children children
    :depth depth})
 
-(defn calc-single-line-length
-  ([] 2)
+(defn calc-single-line-indent
+  ([type]
+   (->> type
+        type-bound-map
+        (map count)
+        (apply +)))
   ([init add]
    (+ init 1 (:length add))))
 
-(defn calc-multi-line-length
-  ([] 2)
-  ([init add]
-   (max init
-        (+ 2 (:length add)))))
+(defn calc-multi-line-indent
+  ([type] (calc-single-line-indent type)))
 
 (defn collapse-depth
   [options]
@@ -63,25 +74,28 @@
   (conj options [sl-len ml-len]))
 
 (defn do-coll
-  [coll depth options]
-  (loop [[head & tail] coll
-         kids []
-         c-depth nil
-         sl-len (calc-single-line-length)
-         ml-len (calc-multi-line-length)]
-    (if (nil? head)
-      [(or c-depth (collapse-depth options))
-       (if (< depth c-depth)
-         (mk-coll-token-map kids depth ml-len true)
-         (mk-coll-token-map kids depth sl-len false))]
-      (let [[c-depth' new-kid] (do-it head
-                                      (inc depth)
-                                      (mk-options options sl-len ml-len))]
-        (recur tail
-               (conj kids new-kid)
-               (max (or c-depth 0) c-depth')
-               (calc-single-line-length sl-len new-kid)
-               (calc-multi-line-length ml-len new-kid))))))
+  [type coll depth options]
+  (let [ml-len (calc-multi-line-indent type)]
+    (loop [[head & tail] (take *max-seq-items* coll)
+           kids []
+           c-depth nil
+           sl-len (calc-single-line-indent type)]
+      (let [multi-line? (< depth (or c-depth 0))]
+        (if (nil? head)
+          [(or c-depth (collapse-depth options))
+           (if multi-line?
+             (mk-coll-token-map type kids depth ml-len true)
+             (mk-coll-token-map type kids depth sl-len false))]
+          (let [[c-depth' new-kid] (do-it head
+                                          (inc depth)
+                                          (mk-options options
+                                                      (if multi-line?
+                                                        ml-len sl-len)
+                                                      ml-len))]
+            (recur tail
+                   (conj kids new-kid)
+                   (min (inc depth) (max (or c-depth 0) c-depth'))
+                   (calc-single-line-indent sl-len new-kid))))))))
 
 (defn do-scalar
   [v options]
@@ -92,10 +106,19 @@
       :length (count s)
       :string s}]))
 
+(defn map->vec
+  [v]
+  (if (map? v)
+    (into [] v)
+    v))
+
 (defn do-it
   [v depth options]
   (if (coll? v)
-    (do-coll v depth options)
+    (do-coll (simple-type v)
+             (map->vec v)
+             depth
+             options)
     (do-scalar v options)))
 
 
@@ -103,34 +126,25 @@
   [coll delim]
   (drop-last (interleave coll (repeat delim))))
 
-(defn single-line
+(defn mk-line
   [coll]
   (let [kids (->> coll
                   :children
-                  (map pass2))]
+                  (map pass2))
+        [opener closer] (-> coll :type type-bound-map)
+        delim (if (:multi-line? coll)
+                {:string "\n" :height 1 :length 0 :line-break true}
+                {:string " " :length 1})]
     (flatten
      (concat
-      [{:p :open :string "[" :length 1}]
-      (interleave-delim  kids {:string " " :length 1})
-      [{:p :close :string "]" :length 1}]))))
-
-(defn multi-line
-  [coll]
-  (let [kids (->> coll
-                  :children
-                  (map pass2))]
-    (flatten
-     (concat
-      [{:p :open :string "[" :length 1}]
-      (interleave-delim kids {:string "\n" :height 1 :length 0 :line-break true})
-      [{:p :close :string "]" :length 1}]))))
+      [{:p :open :string opener :length (count opener) :indent (count opener)}]
+      (interleave-delim  kids delim)
+      [{:p :close :string closer :length (count closer) :indent (count opener)}]))))
 
 (defn pass2
   [v]
   (if (:coll v)
-    (if (:multi-line? v)
-      (multi-line v)
-      (single-line v))
+    (mk-line v)
     v))
 
 (defn spaces [n] (apply str (repeat n " ")))
@@ -138,14 +152,14 @@
 (defn pass3
   "Add indentation"
   [coll init-indent]
-  (loop [[{:keys [p length line-break] :as head} & tail] coll
-         indent init-indent
+  (loop [[{:keys [p indent line-break] :as head} & tail] coll
+         indent- init-indent
          agg []]
     (if (nil? head)
       agg
-      (let [indent' (cond (= p :open) (+ indent length)
-                          (= p :close) (- indent length)
-                          :else indent)
+      (let [indent' (cond (= p :open) (+ indent- indent)
+                          (= p :close) (- indent- indent)
+                          :else indent-)
             agg' (if line-break
                    (conj agg head {:string (spaces indent') :length indent'})
                    (conj agg head))]
@@ -158,7 +172,7 @@
   (apply str (map :string coll)))
 
 
-(def vvv [1  [1 2 3 ["hello"] 6 7 8] 6 ])
+(def vvv {:a #{:d :e} :b (range) :c [1 2 3 4 5 6 7 8 9 10]})
 
 (println (pass4 (pass3 (pass2 (second (do-it vvv 0 [])))
                        0)))
@@ -167,3 +181,6 @@
                                                                        {:string "2" :length 1}
                                                                        {:string "3" :length 1}]})
                        0)))
+
+
+
