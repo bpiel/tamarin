@@ -1,11 +1,12 @@
-(ns tamarin.core)
+(ns tamarin.core
+  (require [clojure.zip :as z]))
 
 (def t1 {:a {:b [1 2 3] :c "hello"} :d :what?})
 (def t2 {:a [1] :b :hi})
 
 (def ^:dynamic *indent-width* 2)
 (def ^:dynamic *target-width* 120)
-(def ^:dynamic *max-x* 20)
+(def ^:dynamic *max-x* 30)
 (def ^:dynamic *max-y* 20)
 (def ^:dynamic *max-seq-items* 20)
 
@@ -24,7 +25,13 @@
     float? :float    
     identity (type v)))
 
-(declare do-it)
+(defn map->vec
+  [v]
+  (if (map? v)
+    (into [] v)
+    v))
+
+(declare pass1)
 (declare pass2)
 
 (def type-bound-map
@@ -34,15 +41,6 @@
    :vector ["[" "]"]
    :map-entry ["" ""]
    :set ["#{" "}"] })
-
-(defn mk-coll-token-map
-  [type children depth length multi-line?]
-  {:coll true
-   :type type 
-   :multi-line? multi-line?
-   :length length
-   :children children
-   :depth depth})
 
 (defn calc-single-line-indent
   ([type]
@@ -73,7 +71,28 @@
   [options sl-len ml-len]
   (conj options [sl-len ml-len]))
 
-(defn do-coll
+(defn mk-coll-pass1-token-map
+  [type children depth length multi-line?]
+  (let [[opener closer] (type type-bound-map)]
+    {:coll? true
+     :type type 
+     :multi-line? multi-line?
+     :length length
+     :children children
+     :depth depth
+     :bounds [{:boundary :open :string opener :length (count opener)}
+              {:boundary :close :string closer :length (count closer)}]}))
+
+(defn pass1-scalar
+  [v options]
+  (let [s (pr-str v)]
+    [(collapse-depth options)
+     {:coll? false
+      :type (simple-type v)
+      :length (count s)
+      :string s}]))
+
+(defn pass1-coll
   [type coll depth options]
   (let [ml-len (calc-multi-line-indent type)]
     (loop [[head & tail] (take *max-seq-items* coll)
@@ -84,9 +103,9 @@
         (if (nil? head)
           [(or c-depth (collapse-depth options))
            (if multi-line?
-             (mk-coll-token-map type kids depth ml-len true)
-             (mk-coll-token-map type kids depth sl-len false))]
-          (let [[c-depth' new-kid] (do-it head
+             (mk-coll-pass1-token-map type kids depth ml-len true)
+             (mk-coll-pass1-token-map type kids depth sl-len false))]
+          (let [[c-depth' new-kid] (pass1 head
                                           (inc depth)
                                           (mk-options options
                                                       (if multi-line?
@@ -97,30 +116,14 @@
                    (min (inc depth) (max (or c-depth 0) c-depth'))
                    (calc-single-line-indent sl-len new-kid))))))))
 
-(defn do-scalar
-  [v options]
-  (let [s (pr-str v)]
-    [(collapse-depth options)
-     {:coll false
-      :multi-line? false
-      :length (count s)
-      :string s}]))
-
-(defn map->vec
-  [v]
-  (if (map? v)
-    (into [] v)
-    v))
-
-(defn do-it
+(defn pass1
   [v depth options]
   (if (coll? v)
-    (do-coll (simple-type v)
+    (pass1-coll (simple-type v)
              (map->vec v)
              depth
              options)
-    (do-scalar v options)))
-
+    (pass1-scalar v options)))
 
 (defn interleave-delim
   [coll delim]
@@ -141,46 +144,114 @@
       (interleave-delim  kids delim)
       [{:p :close :string closer :length (count closer) :indent (count opener)}]))))
 
-(defn pass2
-  [v]
-  (if (:coll v)
-    (mk-line v)
-    v))
 
 (defn spaces [n] (apply str (repeat n " ")))
 
+(defn increment-position
+  [multi-line? base-column line column pos]
+  (if multi-line?
+    [(inc line) base-column (inc pos)]
+    [line (inc column) (inc pos)]))
+
+(defn pass2-scalar
+  [v line column pos]
+  (let [end (+ pos (:length v))]
+    [(assoc v
+            :line line
+            :column column
+            :start pos
+            :end end)
+     line column end]))
+
+(defn pass2-coll
+  [coll line column pos]
+  (let [[opener closer] (:bounds coll)]
+    (loop [[head & tail] (:children coll)
+           kids []
+           line' line
+           column' (-> opener :length (+ column))
+           pos' (-> opener :length (+ pos))]
+      (if (nil? head)
+        [(-> coll
+             (assoc-in [:bounds 0 :start] pos)
+             (assoc-in [:bounds 1 :end] (-> closer :length (+ pos')))
+             (assoc :children kids))
+         line' column' pos']
+        (let [[new-kid line'' column'' pos''] (pass2 head line' column' pos')
+              [line''' column''' pos'''] (increment-position (:multi-line? coll)
+                                                             column
+                                                             line'' column'' pos'')]
+          (recur tail
+                 (conj kids new-kid)
+                 line''' column''' pos'''))))))
+
+(defn pass2
+  "Add :line, :col, :start, :end"
+  [v line column start]
+  (if (:coll? v)
+    (pass2-coll v line column start)
+    (pass2-scalar v line column start)))
+
 (defn pass3
-  "Add indentation"
-  [coll init-indent]
-  (loop [[{:keys [p indent line-break] :as head} & tail] coll
-         indent- init-indent
-         agg []]
-    (if (nil? head)
-      agg
-      (let [indent' (cond (= p :open) (+ indent- indent)
-                          (= p :close) (- indent- indent)
-                          :else indent-)
-            agg' (if line-break
-                   (conj agg head {:string (spaces indent') :length indent'})
-                   (conj agg head))]
-        (recur tail
-               indent'
-               agg')))))
-
-(defn pass4
-  [coll]
-  (apply str (map :string coll)))
+  [v]
+  (z/zipper :coll? :children #(assoc % :children %2) v ))
 
 
-(def vvv {:a #{:d :e} :b (range) :c [1 2 3 4 5 6 7 8 9 10]})
+(def vvv [:a {:b :c} #{ 1 2 3}])
 
-(println (pass4 (pass3 (pass2 (second (do-it vvv 0 [])))
-                       0)))
+(clojure.pprint/pprint  (pass1 vvv 0 []))
+
+(clojure.pprint/pprint (pass2  (second (pass1 vvv 0 []))
+                               0 0 0))
 
 #_ (println (pass4 (pass3 (pass2 {:coll true :multi-line? true :children [{:string "1" :length 1}
                                                                        {:string "2" :length 1}
                                                                        {:string "3" :length 1}]})
                        0)))
+ "
+## pass1 
+
+{:coll true
+   :type type 
+   :multi-line? multi-line?
+   :length length
+   :children children
+   :depth depth
+   :bounds [{:length 1 :string '['} ...]} 
+
+{:coll false
+      :length (count s)
+      :string s}
+
+
+## pass2
+
+:line
+:col
+:start
+:end
+
+## pass3
+
+attach zipper
+
+## pass4
+
+token stream
+
+## pass5
+
+rendered streams
+
+
+{
+
+"
+
+
+
+
+
 
 
 
