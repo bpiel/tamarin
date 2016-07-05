@@ -21,6 +21,7 @@
     seq? :seq
     set? :set
     string? :string
+    keyword? :keyword
     integer? :int
     float? :float    
     identity (type v)))
@@ -155,13 +156,14 @@
 
 (defn pass2-scalar
   [v line column pos]
-  (let [end (+ pos (:length v))]
+  (let [end (+ pos (:length v))
+        column' (+ column (:length v))]
     [(assoc v
             :line line
             :column column
             :start pos
             :end end)
-     line column end]))
+     line column' end]))
 
 (defn pass2-coll
   [coll line column pos]
@@ -172,11 +174,21 @@
            column' (-> opener :length (+ column))
            pos' (-> opener :length (+ pos))]
       (if (nil? head)
-        [(-> coll
-             (assoc-in [:bounds 0 :start] pos)
-             (assoc-in [:bounds 1 :end] (-> closer :length (+ pos')))
-             (assoc :children kids))
-         line' column' pos']
+        (let [column'' (-> closer :length (+ column'))
+              pos'' (-> closer :length (+ pos'))]
+          [(-> coll
+               (update-in [:bounds 0] assoc
+                          :start pos
+                          :end (-> opener :length (+ pos))
+                          :line line
+                          :column column)
+               (update-in [:bounds 1] assoc
+                          :start pos'
+                          :end pos''
+                          :line line'
+                          :column column'')
+               (assoc :children kids))
+           line' column'' pos''])
         (let [[new-kid line'' column'' pos''] (pass2 head line' column' pos')
               [line''' column''' pos'''] (increment-position (:multi-line? coll)
                                                              column
@@ -192,17 +204,84 @@
     (pass2-coll v line column start)
     (pass2-scalar v line column start)))
 
+(defn pass3-scalar
+  [node zipr]
+
+  (assoc node :zipper zipr))
+
+(defn pass3-coll
+  [node zipr]
+  (-> node
+      (assoc-in [:bounds 0 :zipper] zipr)
+      (assoc-in [:bounds 1 :zipper] zipr)))
+
+(defn pass3*
+  [node zipr]
+  (cond
+    (-> node map? not) node ;; TODO remove this line
+    (:coll? node) (pass3-coll node zipr)
+    :default (pass3-scalar node zipr)))
+
+(defn zipper-visit-all
+  [zipr f & args]
+  (loop [z' zipr]
+    (if (z/end? z')
+      z'
+      (recur (z/next (apply z/edit z' f args))))))
+
 (defn pass3
   [v]
-  (z/zipper :coll? :children #(assoc % :children %2) v ))
+  (let [zipr (z/zipper :coll? :children #(assoc % :children %2) v)]
+    (-> zipr
+        (zipper-visit-all pass3* zipr)
+        z/root)))
 
+(defn pass4-coll
+  [coll]
+  (let [[opener closer] (:bounds coll)]
+    (concat [opener]
+            (mapcat pass4 (:children coll))
+            [closer])))
 
-(def vvv [:a {:b :c} #{ 1 2 3}])
+(defn pass4-scalar [v] [v])
+
+(defn pass4
+  [v]
+  (if (:coll? v)
+    (pass4-coll v)
+    (pass4-scalar v)))
+
+(defn mk-whitespace-token
+  [line column next-line next-column]
+  (let [diff-lines (- next-line line)
+        diff-cols (- next-column column)
+        s (apply str (concat (when (> diff-lines 0)
+                               (repeat diff-lines "\n"))
+                             (when (> diff-cols 0)
+                               (repeat diff-cols " "))))]
+    (when (not-empty s)
+      {:string s
+       :length (count s)})))
+
+(defn pass5
+  [[head & tail] line column]
+  (if head
+    (concat [(mk-whitespace-token line column (:line head) (:column head))]
+            [head]
+            (pass5 tail (:line head) (:column head)))
+    []))
+
+(def vvv [:a :b [:c]])
 
 (clojure.pprint/pprint  (pass1 vvv 0 []))
 
 (clojure.pprint/pprint (pass2  (second (pass1 vvv 0 []))
                                0 0 0))
+
+(def zz (pass3 (first (pass2  (second (pass1 vvv 0 []))
+                              0 0 0))))
+
+(def tokens (pass5 (pass4 zz) 0 0))
 
 #_ (println (pass4 (pass3 (pass2 {:coll true :multi-line? true :children [{:string "1" :length 1}
                                                                        {:string "2" :length 1}
@@ -237,20 +316,16 @@ attach zipper
 
 ## pass4
 
-token stream
+token stream w/o whitespace
 
 ## pass5
 
-rendered streams
+token stream w/ whitespace
 
 
 {
 
 "
-
-
-
-
 
 
 
