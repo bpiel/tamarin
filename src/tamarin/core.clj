@@ -100,7 +100,8 @@
            kids []
            c-depth nil
            sl-len (calc-single-line-indent type)]
-      (let [multi-line? (< depth (or c-depth 0))]
+      (let [multi-line? (and (not= type :map-entry)
+                             (< depth (or c-depth 0)))]
         (if (nil? head)
           [(or c-depth (collapse-depth options))
            (if multi-line?
@@ -130,40 +131,26 @@
   [coll delim]
   (drop-last (interleave coll (repeat delim))))
 
-(defn mk-line
-  [coll]
-  (let [kids (->> coll
-                  :children
-                  (map pass2))
-        [opener closer] (-> coll :type type-bound-map)
-        delim (if (:multi-line? coll)
-                {:string "\n" :height 1 :length 0 :line-break true}
-                {:string " " :length 1})]
-    (flatten
-     (concat
-      [{:p :open :string opener :length (count opener) :indent (count opener)}]
-      (interleave-delim  kids delim)
-      [{:p :close :string closer :length (count closer) :indent (count opener)}]))))
-
-
-(defn spaces [n] (apply str (repeat n " ")))
-
 (defn increment-position
-  [multi-line? base-column line column pos]
-  (if multi-line?
-    [(inc line) base-column (inc pos)]
-    [line (inc column) (inc pos)]))
+  [more? multi-line? base-column line column pos]
+  (if more?
+    (if multi-line?
+      [(inc line) base-column (inc pos)]
+      [line (inc column) (inc pos)])
+    [line column pos]))
 
 (defn pass2-scalar
   [v line column pos]
   (let [end (+ pos (:length v))
-        column' (+ column (:length v))]
+        end-column (+ column (:length v))]
     [(assoc v
-            :line line
-            :column column
+            :start-line line
+            :start-column column
+            :end-line line
+            :end-column end-column
             :start pos
             :end end)
-     line column' end]))
+     line end-column end]))
 
 (defn pass2-coll
   [coll line column pos]
@@ -180,18 +167,23 @@
                (update-in [:bounds 0] assoc
                           :start pos
                           :end (-> opener :length (+ pos))
-                          :line line
-                          :column column)
+                          :start-line line
+                          :end-line line
+                          :start-column column
+                          :end-column (-> opener :length (+ column)))
                (update-in [:bounds 1] assoc
                           :start pos'
                           :end pos''
-                          :line line'
-                          :column column'')
+                          :start-line line'
+                          :end-line line'
+                          :start-column column'
+                          :end-column column'')
                (assoc :children kids))
            line' column'' pos''])
         (let [[new-kid line'' column'' pos''] (pass2 head line' column' pos')
-              [line''' column''' pos'''] (increment-position (:multi-line? coll)
-                                                             column
+              [line''' column''' pos'''] (increment-position (-> tail empty? not)
+                                                             (:multi-line? coll)
+                                                             column'
                                                              line'' column'' pos'')]
           (recur tail
                  (conj kids new-kid)
@@ -236,6 +228,8 @@
         (zipper-visit-all pass3* zipr)
         z/root)))
 
+(declare pass4)
+
 (defn pass4-coll
   [coll]
   (let [[opener closer] (:bounds coll)]
@@ -254,7 +248,9 @@
 (defn mk-whitespace-token
   [line column next-line next-column]
   (let [diff-lines (- next-line line)
-        diff-cols (- next-column column)
+        diff-cols (if (> diff-lines 0)
+                    next-column
+                    (- next-column column))
         s (apply str (concat (when (> diff-lines 0)
                                (repeat diff-lines "\n"))
                              (when (> diff-cols 0)
@@ -266,22 +262,18 @@
 (defn pass5
   [[head & tail] line column]
   (if head
-    (concat [(mk-whitespace-token line column (:line head) (:column head))]
+    (concat [(mk-whitespace-token line column (:start-line head) (:start-column head))]
             [head]
-            (pass5 tail (:line head) (:column head)))
+            (pass5 tail (:end-line head) (:end-column head)))
     []))
 
-(def vvv [:a :b [:c]])
+#_ (do
+     (def vvv [:a :b [:c :d :e :f {:g [1 2 3] :h (range)}]])
 
-(clojure.pprint/pprint  (pass1 vvv 0 []))
+     (def zz (pass3 (first (pass2  (second (pass1 vvv 0 []))
+                                   0 0 0))))
 
-(clojure.pprint/pprint (pass2  (second (pass1 vvv 0 []))
-                               0 0 0))
-
-(def zz (pass3 (first (pass2  (second (pass1 vvv 0 []))
-                              0 0 0))))
-
-(def tokens (pass5 (pass4 zz) 0 0))
+     (def tokens (pass5 (pass4 zz) 0 0)))
 
 #_ (println (pass4 (pass3 (pass2 {:coll true :multi-line? true :children [{:string "1" :length 1}
                                                                        {:string "2" :length 1}
