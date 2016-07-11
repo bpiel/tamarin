@@ -36,6 +36,8 @@
 (declare pass1)
 (declare pass2)
 
+(def truncator {:string "..." :length 3 :truncator true :type :truncator})
+
 (def type-bound-map
   {:map ["{" "}"]
    :list ["(" ")"]
@@ -74,13 +76,14 @@
   (conj options [sl-len ml-len]))
 
 (defn mk-coll-pass1-token-map
-  [type children depth length multi-line?]
+  [type children depth length multi-line? trunc?]
   (let [[opener closer] (type type-bound-map)]
     {:coll? true
      :type type 
      :multi-line? multi-line?
+     :trunc? trunc?
      :length length
-     :children children
+     :children (concat children (when trunc? [truncator]))
      :depth depth
      :bounds [{:boundary :open :string opener :length (count opener)}
               {:boundary :close :string closer :length (count closer)}]}))
@@ -96,7 +99,8 @@
 
 (defn pass1-coll
   [type coll depth options]
-  (let [ml-len (calc-multi-line-indent type)]
+  (let [ml-len (calc-multi-line-indent type)
+        trunc? (->> coll (take (inc *max-seq-items*)) count (< *max-seq-items*))]
     (loop [[head & tail] (take *max-seq-items* coll)
            kids []
            c-depth nil
@@ -106,8 +110,8 @@
         (if (nil? head)
           [(or c-depth (collapse-depth options))
            (if multi-line?
-             (mk-coll-pass1-token-map type kids depth ml-len true)
-             (mk-coll-pass1-token-map type kids depth sl-len false))]
+             (mk-coll-pass1-token-map type kids depth ml-len true trunc?)
+             (mk-coll-pass1-token-map type kids depth sl-len false trunc?))]
           (let [[c-depth' new-kid] (pass1 head
                                           (inc depth)
                                           (mk-options options
@@ -160,7 +164,8 @@
            kids []
            line' line
            column' (-> opener :length (+ column))
-           pos' (-> opener :length (+ pos))]
+           pos' (-> opener :length (+ pos))
+           trunc? false]
       (if (nil? head)
         (let [column'' (-> closer :length (+ column'))
               pos'' (-> closer :length (+ pos'))]
@@ -181,14 +186,16 @@
                           :end-column column'')
                (assoc :children kids))
            line' column'' pos''])
-        (let [[new-kid line'' column'' pos''] (pass2 head line' column' pos')
+        (let [trunc? (> line' *max-y*)
+              head' (if trunc? truncator head)
+              [new-kid line'' column'' pos''] (pass2 head' line' column' pos')
               [line''' column''' pos'''] (increment-position (-> tail empty? not)
                                                              (:multi-line? coll)
                                                              column'
                                                              line'' column'' pos'')]
           (recur tail
                  (conj kids new-kid)
-                 line''' column''' pos'''))))))
+                 line''' column''' pos''' trunc?))))))
 
 (defn pass2
   "Add :line, :col, :start, :end"
