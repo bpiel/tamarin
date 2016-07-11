@@ -5,8 +5,7 @@
 (def t2 {:a [1] :b :hi})
 
 (def ^:dynamic *indent-width* 2)
-(def ^:dynamic *target-width* 120)
-(def ^:dynamic *max-x* 30)
+(def ^:dynamic *max-x* 80)
 (def ^:dynamic *max-y* 20)
 (def ^:dynamic *max-seq-items* 20)
 
@@ -22,8 +21,10 @@
     set? :set
     string? :string
     keyword? :keyword
+    symbol? :symbol
     integer? :int
-    float? :float    
+    float? :float
+    (some-fn true? false?) :boolean
     identity (type v)))
 
 (defn map->vec
@@ -250,22 +251,35 @@
   (let [diff-lines (- next-line line)
         diff-cols (if (> diff-lines 0)
                     next-column
-                    (- next-column column))
-        s (apply str (concat (when (> diff-lines 0)
-                               (repeat diff-lines "\n"))
-                             (when (> diff-cols 0)
-                               (repeat diff-cols " "))))]
-    (when (not-empty s)
-      {:string s
-       :length (count s)})))
+                    (- next-column column))]
+    (concat (repeat diff-lines {:string "\n" :length 1 :line-break true})
+            (repeat diff-cols {:string " " :length 1}))))
 
 (defn pass5
   [[head & tail] line column]
   (if head
-    (concat [(mk-whitespace-token line column (:start-line head) (:start-column head))]
+    (concat (mk-whitespace-token line column (:start-line head) (:start-column head))
             [head]
             (pass5 tail (:end-line head) (:end-column head)))
     []))
+
+(defn render-tokens
+  [v]
+  (-> v
+      (pass1 0 [])
+      second
+      (pass2 0 0 0)
+      first
+      pass3
+      pass4
+      (pass5 0 0)))
+
+(defn pprint-str
+  [v]
+  (->> v
+       render-tokens
+       (map :string)
+       (apply str)))
 
 #_ (do
      (def vvv [:a :b [:c :d :e :f {:g [1 2 3] :h (range)}]])
@@ -276,48 +290,13 @@
      (def tokens (pass5 (pass4 zz) 0 0)))
 
 #_ (println (pass4 (pass3 (pass2 {:coll true :multi-line? true :children [{:string "1" :length 1}
-                                                                       {:string "2" :length 1}
-                                                                       {:string "3" :length 1}]})
-                       0)))
- "
-## pass1 
-
-{:coll true
-   :type type 
-   :multi-line? multi-line?
-   :length length
-   :children children
-   :depth depth
-   :bounds [{:length 1 :string '['} ...]} 
-
-{:coll false
-      :length (count s)
-      :string s}
+                                                                          {:string "2" :length 1}
+                                                                          {:string "3" :length 1}]})
+                          )))
 
 
-## pass2
-
-:line
-:col
-:start
-:end
-
-## pass3
-
-attach zipper
-
-## pass4
-
-token stream w/o whitespace
-
-## pass5
-
-token stream w/ whitespace
 
 
-{
-
-"
 
 
 

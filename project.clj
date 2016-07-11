@@ -1,4 +1,4 @@
-(defproject tamarin "0.1.0-SNAPSHOT"
+(defproject tamarin "0.1.0-dev"
   :description "FIXME: write description"
   :url "http://example.com/FIXME"
   :license {:name "Eclipse Public License"
