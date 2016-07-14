@@ -193,7 +193,7 @@
                                                              (:multi-line? coll)
                                                              column'
                                                              line'' column'' pos'')]
-          (recur tail
+          (recur (if trunc? [] tail)
                  (conj kids new-kid)
                  line''' column''' pos''' trunc?))))))
 
