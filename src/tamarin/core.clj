@@ -227,13 +227,13 @@
   (loop [z' zipr]
     (if (z/end? z')
       z'
-      (recur (z/next (apply z/edit z' f args))))))
+      (recur (z/next (apply z/edit z' f z' args))))))
 
 (defn pass3
   [v]
   (let [zipr (z/zipper :coll? :children #(assoc % :children %2) v)]
     (-> zipr
-        (zipper-visit-all pass3* zipr)
+        (zipper-visit-all pass3*)
         z/root)))
 
 (declare pass4)
