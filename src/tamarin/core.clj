@@ -100,14 +100,15 @@
 (defn pass1-coll
   [type coll depth options]
   (let [ml-len (calc-multi-line-indent type)
-        trunc? (->> coll (take (inc *max-seq-items*)) count (< *max-seq-items*))]
-    (loop [[head & tail] (take *max-seq-items* coll)
+        trunc? (->> coll (take (inc *max-seq-items*)) count (< *max-seq-items*))
+        coll-EOL (concat (take *max-seq-items* coll) [::EOL])]
+    (loop [[head & tail] coll-EOL
            kids []
            c-depth nil
            sl-len (calc-single-line-indent type)]
       (let [multi-line? (and (not= type :map-entry)
                              (< depth (or c-depth 0)))]
-        (if (nil? head)
+        (if (= ::EOL head)
           [(or c-depth (collapse-depth options))
            (if multi-line?
              (mk-coll-pass1-token-map type kids depth ml-len true trunc?)
@@ -159,14 +160,15 @@
 
 (defn pass2-coll
   [coll line column pos]
-  (let [[opener closer] (:bounds coll)]
-    (loop [[head & tail] (:children coll)
+  (let [[opener closer] (:bounds coll)
+        children-EOL (concat (:children coll) [::EOL])]
+    (loop [[head & tail] children-EOL
            kids []
            line' line
            column' (-> opener :length (+ column))
            pos' (-> opener :length (+ pos))
            trunc? false]
-      (if (nil? head)
+      (if (= ::EOL head)
         (let [column'' (-> closer :length (+ column'))
               pos'' (-> closer :length (+ pos'))]
           [(-> coll
@@ -189,7 +191,7 @@
         (let [trunc? (> line' *max-y*)
               head' (if trunc? truncator head)
               [new-kid line'' column'' pos''] (pass2 head' line' column' pos')
-              [line''' column''' pos'''] (increment-position (-> tail empty? not)
+              [line''' column''' pos'''] (increment-position (-> tail first (not= ::EOL)) 
                                                              (:multi-line? coll)
                                                              column'
                                                              line'' column'' pos'')]
@@ -222,16 +224,22 @@
     (:coll? node) (pass3-coll node zipr)
     :default (pass3-scalar node zipr)))
 
+(defn attach-kids-to-parent
+  [node kids]
+  (if (not= kids '(nil)) ;; necessary for some reason
+    (assoc node :children kids)
+    node))
+
 (defn zipper-visit-all
-  [zipr f & args]
+  [zipr f]
   (loop [z' zipr]
-    (if (z/end? z')
+    (if (-> z' z/next z/end?)
       z'
-      (recur (z/next (apply z/edit z' f z' args))))))
+      (recur (z/next (z/edit z' f z'))))))
 
 (defn pass3
   [v]
-  (let [zipr (z/zipper :coll? :children #(assoc % :children %2) v)]
+  (let [zipr (z/zipper :coll? :children attach-kids-to-parent v)]
     (-> zipr
         (zipper-visit-all pass3*)
         z/root)))
