@@ -195,7 +195,7 @@
                                                              (:multi-line? coll)
                                                              column'
                                                              line'' column'' pos'')]
-          (recur (if trunc? [] tail)
+          (recur (if trunc? [::EOL] tail)
                  (conj kids new-kid)
                  line''' column''' pos''' trunc?))))))
 
