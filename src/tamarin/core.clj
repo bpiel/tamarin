@@ -41,7 +41,7 @@
 (declare pass1)
 (declare pass2)
 
-(def truncator {:string "..." :length 3 :truncator true :type :truncator})
+(def truncator {:string "..." :length 3 :truncator true :type [:truncator nil]})
 
 (def type-bound-map
   {:map ["{" "}"]
