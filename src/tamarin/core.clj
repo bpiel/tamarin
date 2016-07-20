@@ -13,6 +13,7 @@
   [v]
   (condp #(% %2) v
     nil? nil
+    record? :record
     map? :map
     #(= (type %) clojure.lang.MapEntry) :map-entry
     vector? :vector
@@ -25,7 +26,11 @@
     integer? :int
     float? :float
     (some-fn true? false?) :boolean
-    identity (type v)))
+    identity :other))
+
+(defn get-type
+  [v]
+  [(simple-type v) (type v)])
 
 (defn map->vec
   [v]
@@ -46,10 +51,17 @@
    :map-entry ["" ""]
    :set ["#{" "}"] })
 
+(defn get-bound-strings
+  [[simple-type full-type]]
+  (or (simple-type type-bound-map)
+      (when (= simple-type :record)
+        [(format "#%s{" (pr-str full-type)) "}"])
+      ["?<" ">?"]))
+
 (defn calc-single-line-indent
   ([type]
    (->> type
-        type-bound-map
+        get-bound-strings
         (map count)
         (apply +)))
   ([init add]
@@ -77,7 +89,7 @@
 
 (defn mk-coll-pass1-token-map
   [type children depth length multi-line? trunc?]
-  (let [[opener closer] (type type-bound-map)]
+  (let [[opener closer] (get-bound-strings type)]
     {:coll? true
      :type type 
      :multi-line? multi-line?
@@ -93,7 +105,7 @@
   (let [s (pr-str v)]
     [(collapse-depth options)
      {:coll? false
-      :type (simple-type v)
+      :type (get-type v)
       :length (count s)
       :string s}]))
 
@@ -106,7 +118,7 @@
            kids []
            c-depth nil
            sl-len (calc-single-line-indent type)]
-      (let [multi-line? (and (not= type :map-entry)
+      (let [multi-line? (and (not= (first type) :map-entry)
                              (< depth (or c-depth 0)))]
         (if (= ::EOL head)
           [(or c-depth (collapse-depth options))
@@ -127,7 +139,7 @@
 (defn pass1
   [v depth options]
   (if (coll? v)
-    (pass1-coll (simple-type v)
+    (pass1-coll (get-type v)
              (map->vec v)
              depth
              options)
