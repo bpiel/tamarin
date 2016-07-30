@@ -153,7 +153,7 @@
   [more? multi-line? base-column line column pos]
   (if more?
     (if multi-line?
-      [(inc line) base-column (inc pos)]
+      [(inc line) base-column (+ base-column pos 1)]
       [line (inc column) (inc pos)])
     [line column pos]))
 
