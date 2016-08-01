@@ -220,7 +220,6 @@
 
 (defn pass3-scalar
   [node zipr]
-
   (assoc node :zipper zipr))
 
 (defn pass3-coll
@@ -245,7 +244,7 @@
 (defn zipper-visit-all
   [zipr f]
   (loop [z' zipr]
-    (if (-> z' z/next z/end?)
+    (if (-> z' z/end?)
       z'
       (recur (z/next (z/edit z' f z'))))))
 
