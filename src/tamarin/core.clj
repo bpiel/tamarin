@@ -260,9 +260,9 @@
 (defn pass4-coll
   [coll]
   (let [[opener closer] (:bounds coll)]
-    (concat [opener]
-            (mapcat pass4 (:children coll))
-            [closer])))
+    (doall (concat [opener]
+                   (mapcat pass4 (:children coll))
+                   [closer]))))
 
 (defn pass4-scalar [v] [v])
 
@@ -282,12 +282,13 @@
             (repeat diff-cols {:string " " :length 1}))))
 
 (defn pass5
-  [[head & tail] line column]
-  (if head
-    (concat (mk-whitespace-token line column (:start-line head) (:start-column head))
-            [head]
-            (pass5 tail (:end-line head) (:end-column head)))
-    []))
+     [[head & tail] line column & agg]
+     (if head
+       (recur tail (:end-line head) (:end-column head)
+              (doall (concat agg
+                             (mk-whitespace-token line column (:start-line head) (:start-column head))
+                             [head])))
+       (or agg [])))
 
 (defn render-tokens
   [v]
@@ -306,24 +307,3 @@
        render-tokens
        (map :string)
        (apply str)))
-
-#_ (do
-     (def vvv [:a :b [:c :d :e :f {:g [1 2 3] :h (range)}]])
-
-     (def zz (pass3 (first (pass2  (second (pass1 vvv 0 []))
-                                   0 0 0))))
-
-     (def tokens (pass5 (pass4 zz) 0 0)))
-
-#_ (println (pass4 (pass3 (pass2 {:coll true :multi-line? true :children [{:string "1" :length 1}
-                                                                          {:string "2" :length 1}
-                                                                          {:string "3" :length 1}]})
-                          )))
-
-
-
-
-
-
-
-
