@@ -1,4 +1,4 @@
-(defproject tamarin "0.1.1"
+(defproject tamarin "0.1.1-dev"
   :description "climbs trees"
   :signing {:gpg-key "<bill@billpiel.com>"}
   :url "https://github.com/bpiel/tamarin"
