@@ -15,7 +15,7 @@
     nil? nil
     record? :record
     map? :map
-    #(= (type %) clojure.lang.MapEntry) :map-entry
+    #(isa? (type %) clojure.lang.MapEntry) :map-entry
     vector? :vector
     list? :list
     seq? :seq
