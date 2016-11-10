@@ -1,5 +1,5 @@
 (ns tamarin.core
-  (require [clojure.zip :as z]))
+  (:require [clojure.zip :as z]))
 
 (def t1 {:a {:b [1 2 3] :c "hello"} :d :what?})
 (def t2 {:a [1] :b :hi})
